@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { joinSession } from '../lib/api'
+import { getSocket } from '../socket'
 
 interface Props {
   defaultCode: string
@@ -14,18 +14,17 @@ export default function JoinScreen({ defaultCode, onJoin, onCreateHost }: Props)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  async function handleJoin() {
+  function handleJoin() {
     if (!code.trim() || !name.trim()) return
     setLoading(true)
     setError('')
-    try {
-      await joinSession(code.trim().toUpperCase(), name.trim())
-      onJoin(name.trim(), code.trim().toUpperCase())
-    } catch (e) {
-      setError((e as Error).message)
-    } finally {
+    const socket = getSocket()
+    socket.connect()
+    socket.emit('join-session', { code: code.trim().toUpperCase(), name: name.trim() }, (res: { ok?: boolean; error?: string }) => {
       setLoading(false)
-    }
+      if (res?.error) { setError(res.error); socket.disconnect() }
+      else onJoin(name.trim(), code.trim().toUpperCase())
+    })
   }
 
   if (mode === 'pick') {
@@ -37,12 +36,8 @@ export default function JoinScreen({ defaultCode, onJoin, onCreateHost }: Props)
         <h2>Gamified Survey — Earn points, hit the leaderboard!</h2>
         <p>All survey responses are anonymous. Have fun with the trivia!</p>
         <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', justifyContent: 'center' }}>
-          <button className="btn btn-primary" onClick={() => setMode('join')}>
-            🎮 Join a Session
-          </button>
-          <button className="btn btn-secondary" onClick={onCreateHost}>
-            🎛️ I'm an Organizer
-          </button>
+          <button className="btn btn-primary" onClick={() => setMode('join')}>🎮 Join a Session</button>
+          <button className="btn btn-secondary" onClick={onCreateHost}>🎛️ I'm an Organizer</button>
         </div>
       </div>
     )
@@ -55,16 +50,7 @@ export default function JoinScreen({ defaultCode, onJoin, onCreateHost }: Props)
       <h1>Join the Survey</h1>
 
       {error && (
-        <div style={{
-          background: 'rgba(239,68,68,0.15)',
-          border: '1px solid rgba(239,68,68,0.4)',
-          borderRadius: 10,
-          padding: '0.75rem 1.25rem',
-          color: '#fca5a5',
-          fontWeight: 700,
-          maxWidth: 380,
-          textAlign: 'center',
-        }}>
+        <div style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)', borderRadius: 10, padding: '0.75rem 1.25rem', color: '#fca5a5', fontWeight: 700, maxWidth: 380, textAlign: 'center' }}>
           ⚠️ {error}
         </div>
       )}
@@ -95,16 +81,10 @@ export default function JoinScreen({ defaultCode, onJoin, onCreateHost }: Props)
       </div>
 
       <div style={{ display: 'flex', gap: '1rem', flexWrap: 'wrap', justifyContent: 'center' }}>
-        <button
-          className="btn btn-primary"
-          disabled={!code.trim() || !name.trim() || loading}
-          onClick={handleJoin}
-        >
+        <button className="btn btn-primary" disabled={!code.trim() || !name.trim() || loading} onClick={handleJoin}>
           {loading ? 'Joining...' : '🚀 Join Session'}
         </button>
-        {!defaultCode && (
-          <button className="btn btn-secondary" onClick={() => setMode('pick')}>← Back</button>
-        )}
+        {!defaultCode && <button className="btn btn-secondary" onClick={() => setMode('pick')}>← Back</button>}
       </div>
 
       <p style={{ fontSize: '0.78rem', color: 'rgba(148,163,184,0.6)' }}>

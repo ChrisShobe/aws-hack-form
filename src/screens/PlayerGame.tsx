@@ -1,14 +1,8 @@
 import { useState, useCallback, useEffect } from 'react'
 import { questions } from '../questions'
 import type { Question } from '../questions'
-import { submitResponse, getLeaderboard } from '../lib/api'
-import { supabase } from '../lib/supabase'
-import {
-  SurveyMCQuestion,
-  TriviaMCQuestion,
-  RatingQuestion,
-  FreeResponseQuestion,
-} from '../components/QuestionTypes'
+import { getSocket } from '../socket'
+import { SurveyMCQuestion, TriviaMCQuestion, RatingQuestion, FreeResponseQuestion } from '../components/QuestionTypes'
 
 interface LBEntry { rank: number; name: string; score: number }
 
@@ -21,26 +15,13 @@ interface Props {
 function Confetti() {
   const colors = ['#f5c518', '#ec4899', '#8b5cf6', '#10b981', '#3b82f6', '#f97316']
   const pieces = Array.from({ length: 60 }, (_, i) => ({
-    id: i,
-    color: colors[i % colors.length],
-    left: Math.random() * 100,
-    delay: Math.random() * 1.5,
-    duration: 2.5 + Math.random() * 2,
+    id: i, color: colors[i % colors.length],
+    left: Math.random() * 100, delay: Math.random() * 1.5, duration: 2.5 + Math.random() * 2,
   }))
   return (
     <>
       {pieces.map(p => (
-        <div
-          key={p.id}
-          className="confetti-piece"
-          style={{
-            left: `${p.left}%`,
-            top: '-20px',
-            backgroundColor: p.color,
-            animationDelay: `${p.delay}s`,
-            animationDuration: `${p.duration}s`,
-          }}
-        />
+        <div key={p.id} className="confetti-piece" style={{ left: `${p.left}%`, top: '-20px', backgroundColor: p.color, animationDelay: `${p.delay}s`, animationDuration: `${p.duration}s` }} />
       ))}
     </>
   )
@@ -51,19 +32,10 @@ function FinalScreen({ playerName, finalScore, sessionCode }: { playerName: stri
   const [showConfetti, setShowConfetti] = useState(true)
 
   useEffect(() => {
-    getLeaderboard(sessionCode).then(setBoard)
-
-    const channel = supabase
-      .channel(`player-done-${sessionCode}`)
-      .on(
-        'postgres_changes',
-        { event: '*', schema: 'public', table: 'players', filter: `session_code=eq.${sessionCode}` },
-        () => getLeaderboard(sessionCode).then(setBoard)
-      )
-      .subscribe()
-
+    getSocket().emit('get-leaderboard', { code: sessionCode }, (data: LBEntry[]) => setBoard(data))
+    getSocket().on('leaderboard-update', setBoard)
     const t = setTimeout(() => setShowConfetti(false), 4500)
-    return () => { supabase.removeChannel(channel); clearTimeout(t) }
+    return () => { getSocket().off('leaderboard-update', setBoard); clearTimeout(t) }
   }, [sessionCode])
 
   const myRank = board.findIndex(e => e.name === playerName)
@@ -85,20 +57,14 @@ function FinalScreen({ playerName, finalScore, sessionCode }: { playerName: stri
 
       <div className="leaderboard-list">
         {board.map((e, i) => (
-          <div
-            key={i}
-            className={`leaderboard-entry ${e.name === playerName ? 'me' : ''}`}
-            style={{ animationDelay: `${i * 0.07}s` }}
-          >
+          <div key={i} className={`leaderboard-entry ${e.name === playerName ? 'me' : ''}`} style={{ animationDelay: `${i * 0.07}s` }}>
             <span className="lb-rank">{rankEmoji(i)}</span>
             <span className="lb-name">{e.name}</span>
             {e.name === playerName && <span className="lb-you-badge">YOU</span>}
             <span className="lb-score">{e.score.toLocaleString()}</span>
           </div>
         ))}
-        {board.length === 0 && (
-          <div style={{ textAlign: 'center', color: '#94a3b8' }}>Loading...</div>
-        )}
+        {board.length === 0 && <div style={{ textAlign: 'center', color: '#94a3b8' }}>Loading...</div>}
       </div>
 
       <div style={{ textAlign: 'center', color: '#475569', fontSize: '0.8rem', maxWidth: 400 }}>
@@ -121,22 +87,18 @@ export default function PlayerGame({ playerName, sessionCode, onComplete }: Prop
     const q = questions[qIdx]
     const next = Math.max(0, score + points)
     setScore(next)
-
-    // Fire-and-forget save to Supabase
-    submitResponse(sessionCode, playerName, q.id, q.text, answerLabel, points, next)
-
+    getSocket().emit('submit-response', { questionId: q.id, questionText: q.text, answerLabel, points })
     if (qIdx + 1 >= total) {
+      getSocket().emit('survey-complete')
       setFinalScore(next)
       setDone(true)
       onComplete(next)
     } else {
       setQIdx(i => i + 1)
     }
-  }, [qIdx, score, total, sessionCode, playerName, onComplete])
+  }, [qIdx, score, total, onComplete])
 
-  if (done) {
-    return <FinalScreen playerName={playerName} finalScore={finalScore} sessionCode={sessionCode} />
-  }
+  if (done) return <FinalScreen playerName={playerName} finalScore={finalScore} sessionCode={sessionCode} />
 
   return (
     <div className="game-shell">
@@ -162,16 +124,10 @@ export default function PlayerGame({ playerName, sessionCode, onComplete }: Prop
 
 function QuestionView({ question, onAnswer }: { question: Question; onAnswer: (label: string, pts: number) => void }) {
   switch (question.type) {
-    case 'survey-mc':
-    case 'yes-no':
-      return <SurveyMCQuestion question={question} onAnswer={onAnswer} />
-    case 'trivia-mc':
-      return <TriviaMCQuestion question={question} onAnswer={onAnswer} />
-    case 'survey-rating':
-      return <RatingQuestion question={question} onAnswer={onAnswer} />
-    case 'free-response':
-      return <FreeResponseQuestion question={question} onAnswer={onAnswer} />
-    default:
-      return null
+    case 'survey-mc': case 'yes-no': return <SurveyMCQuestion question={question} onAnswer={onAnswer} />
+    case 'trivia-mc':                return <TriviaMCQuestion  question={question} onAnswer={onAnswer} />
+    case 'survey-rating':            return <RatingQuestion    question={question} onAnswer={onAnswer} />
+    case 'free-response':            return <FreeResponseQuestion question={question} onAnswer={onAnswer} />
+    default:                         return null
   }
 }
