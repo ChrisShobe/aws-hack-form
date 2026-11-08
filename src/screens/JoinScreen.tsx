@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { getSocket } from '../socket'
+import { joinSession } from '../lib/api'
 
 interface Props {
   defaultCode: string
@@ -14,17 +14,18 @@ export default function JoinScreen({ defaultCode, onJoin, onCreateHost }: Props)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  function handleJoin() {
+  async function handleJoin() {
     if (!code.trim() || !name.trim()) return
     setLoading(true)
     setError('')
-    const socket = getSocket()
-    socket.connect()
-    socket.emit('join-session', { code: code.trim().toUpperCase(), name: name.trim() }, (res: { ok?: boolean; error?: string }) => {
+    try {
+      await joinSession(code.trim().toUpperCase(), name.trim())
+      onJoin(name.trim(), code.trim().toUpperCase())
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
       setLoading(false)
-      if (res?.error) { setError(res.error); socket.disconnect() }
-      else onJoin(name.trim(), code.trim().toUpperCase())
-    })
+    }
   }
 
   if (mode === 'pick') {

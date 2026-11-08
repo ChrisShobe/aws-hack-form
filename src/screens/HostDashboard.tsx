@@ -1,87 +1,54 @@
 import { useState, useEffect } from 'react'
-import { initSocket } from '../socket'
+import { createSession, subscribeLeaderboard, downloadCSV } from '../lib/api'
 
-interface Player { rank: number; name: string; score: number }
+interface LBEntry { rank: number; name: string; score: number }
 
 export default function HostDashboard() {
-  const [step, setStep] = useState<'setup' | 'live'>('setup')
-  const [serverUrl, setServerUrl] = useState(import.meta.env.DEV ? 'http://localhost:3001' : '')
+  const [step, setStep] = useState<'create' | 'live'>('create')
   const [customCode, setCustomCode] = useState('')
   const [code, setCode] = useState('')
-  const [joinUrl, setJoinUrl] = useState('')
-  const [players, setPlayers] = useState<Player[]>([])
+  const [players, setPlayers] = useState<LBEntry[]>([])
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
-  const [copiedIdx, setCopiedIdx] = useState<number | null>(null)
-
-  // socket is set up only after the host enters their server URL
-  const [sock, setSock] = useState<ReturnType<typeof initSocket> | null>(null)
+  const [copied, setCopied] = useState(false)
 
   useEffect(() => {
-    if (!sock) return
-    sock.on('leaderboard-update', setPlayers)
-    sock.on('participants-update', setPlayers)
-    return () => { sock.off('leaderboard-update', setPlayers); sock.off('participants-update', setPlayers) }
-  }, [sock])
+    if (!code) return
+    return subscribeLeaderboard(code, setPlayers)
+  }, [code])
 
-  function handleCreate() {
-    const trimmed = serverUrl.trim().replace(/\/$/, '')
-    if (!trimmed) { setError('Enter your server URL first.'); return }
-
+  async function handleCreate() {
     setLoading(true)
     setError('')
-
-    const s = initSocket(trimmed)
-    s.connect()
-    s.emit('create-session', { customCode: customCode.trim() || undefined }, (res: { code?: string; error?: string }) => {
-      setLoading(false)
-      if (res?.error) { setError(res.error); s.disconnect(); return }
-
-      const newCode = res.code!
-      // Embed backend URL in the join link so players know where to connect
-      const base = window.location.origin
-      const url = `${base}?code=${newCode}&backend=${encodeURIComponent(trimmed)}`
+    try {
+      const newCode = await createSession(customCode || undefined)
       setCode(newCode)
-      setJoinUrl(url)
-      setSock(s)
       setStep('live')
-    })
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
   }
 
-  function copy(text: string, idx: number) {
-    navigator.clipboard.writeText(text).then(() => { setCopiedIdx(idx); setTimeout(() => setCopiedIdx(null), 2000) })
-  }
-
+  const joinUrl = `${window.location.origin}?code=${code}`
   const rankEmoji = (i: number) => i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`
 
-  if (step === 'setup') {
+  if (step === 'create') {
     return (
       <div className="splash">
         <div className="splash-logo">🎛️</div>
         <div className="splash-badge">ORGANIZER MODE</div>
         <h1>Create a Session</h1>
+        <p>Participants join using your room code. Leave blank for a random code.</p>
 
         {error && (
-          <div style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)', borderRadius: 10, padding: '0.75rem 1.25rem', color: '#fca5a5', fontWeight: 700, maxWidth: 420, textAlign: 'center' }}>
+          <div style={{ background: 'rgba(239,68,68,0.15)', border: '1px solid rgba(239,68,68,0.4)', borderRadius: 10, padding: '0.75rem 1.25rem', color: '#fca5a5', fontWeight: 700, maxWidth: 380, textAlign: 'center' }}>
             ⚠️ {error}
           </div>
         )}
 
-        <div className="name-input-group" style={{ maxWidth: 420 }}>
-          <label>Your server URL</label>
-          <input
-            type="url"
-            placeholder="https://xxxx-xx-xx.ngrok-free.app"
-            value={serverUrl}
-            onChange={e => { setServerUrl(e.target.value); setError('') }}
-            autoFocus={!import.meta.env.DEV}
-          />
-          <span style={{ fontSize: '0.78rem', color: '#475569', marginTop: '0.25rem' }}>
-            Run <code style={{ background: 'rgba(255,255,255,0.08)', padding: '0.1rem 0.4rem', borderRadius: 4 }}>npx ngrok http 3001</code> on your laptop and paste the URL here
-          </span>
-        </div>
-
-        <div className="name-input-group" style={{ maxWidth: 420 }}>
+        <div className="name-input-group">
           <label>Custom room code (optional)</label>
           <input
             type="text"
@@ -91,11 +58,12 @@ export default function HostDashboard() {
             maxLength={10}
             style={{ textTransform: 'uppercase', letterSpacing: '0.12em', textAlign: 'center', fontSize: '1.3rem' }}
             onKeyDown={e => e.key === 'Enter' && !loading && handleCreate()}
+            autoFocus
           />
         </div>
 
-        <button className="btn btn-primary" onClick={handleCreate} disabled={loading || !serverUrl.trim()}>
-          {loading ? 'Connecting...' : 'Create Session →'}
+        <button className="btn btn-primary" onClick={handleCreate} disabled={loading}>
+          {loading ? 'Creating...' : 'Create Session →'}
         </button>
       </div>
     )
@@ -108,25 +76,20 @@ export default function HostDashboard() {
           <div style={{ font: '900 1rem Nunito', color: '#94a3b8', textTransform: 'uppercase', letterSpacing: '0.08em' }}>Host Dashboard</div>
           <div style={{ font: '800 0.85rem Nunito', color: '#475569' }}>{players.length} participant{players.length !== 1 ? 's' : ''} joined</div>
         </div>
-        <a href={`${serverUrl}/api/export/${code}`} className="btn btn-secondary btn-sm" style={{ marginLeft: 'auto' }} target="_blank" rel="noreferrer">
+        <button className="btn btn-secondary btn-sm" style={{ marginLeft: 'auto' }} onClick={() => downloadCSV(code)}>
           ⬇ Export CSV
-        </a>
+        </button>
       </div>
 
       <div className="code-card">
         <div className="code-label">Room Code</div>
         <div className="code-big">{code}</div>
         <div className="join-url-text">{joinUrl}</div>
-        <div style={{ display: 'flex', gap: '0.6rem', flexWrap: 'wrap', justifyContent: 'center' }}>
-          <button className="btn btn-secondary btn-sm" onClick={() => copy(joinUrl, 0)}>
-            {copiedIdx === 0 ? '✅ Copied!' : '📋 Copy Join URL'}
-          </button>
-          <button className="btn btn-secondary btn-sm" onClick={() => copy(code, 1)}>
-            {copiedIdx === 1 ? '✅ Copied!' : '🔑 Copy Code Only'}
-          </button>
-        </div>
+        <button className="btn btn-secondary btn-sm" onClick={() => { navigator.clipboard.writeText(joinUrl); setCopied(true); setTimeout(() => setCopied(false), 2000) }}>
+          {copied ? '✅ Copied!' : '📋 Copy Join URL'}
+        </button>
         <div style={{ fontSize: '0.75rem', color: '#475569', marginTop: '0.25rem' }}>
-          Share the full URL — it works from any device on any network
+          Works from any device on any network
         </div>
       </div>
 

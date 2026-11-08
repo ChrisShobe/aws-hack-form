@@ -1,7 +1,7 @@
 import { useState, useCallback, useEffect } from 'react'
 import { questions } from '../questions'
 import type { Question } from '../questions'
-import { getSocket } from '../socket'
+import { submitResponse, subscribeLeaderboard } from '../lib/api'
 import { SurveyMCQuestion, TriviaMCQuestion, RatingQuestion, FreeResponseQuestion } from '../components/QuestionTypes'
 
 interface LBEntry { rank: number; name: string; score: number }
@@ -32,10 +32,9 @@ function FinalScreen({ playerName, finalScore, sessionCode }: { playerName: stri
   const [showConfetti, setShowConfetti] = useState(true)
 
   useEffect(() => {
-    getSocket().emit('get-leaderboard', { code: sessionCode }, (data: LBEntry[]) => setBoard(data))
-    getSocket().on('leaderboard-update', setBoard)
+    const unsub = subscribeLeaderboard(sessionCode, setBoard)
     const t = setTimeout(() => setShowConfetti(false), 4500)
-    return () => { getSocket().off('leaderboard-update', setBoard); clearTimeout(t) }
+    return () => { unsub(); clearTimeout(t) }
   }, [sessionCode])
 
   const myRank = board.findIndex(e => e.name === playerName)
@@ -87,16 +86,15 @@ export default function PlayerGame({ playerName, sessionCode, onComplete }: Prop
     const q = questions[qIdx]
     const next = Math.max(0, score + points)
     setScore(next)
-    getSocket().emit('submit-response', { questionId: q.id, questionText: q.text, answerLabel, points })
+    submitResponse(sessionCode, playerName, q.id, q.text, answerLabel, points, next)
     if (qIdx + 1 >= total) {
-      getSocket().emit('survey-complete')
       setFinalScore(next)
       setDone(true)
       onComplete(next)
     } else {
       setQIdx(i => i + 1)
     }
-  }, [qIdx, score, total, onComplete])
+  }, [qIdx, score, total, sessionCode, playerName, onComplete])
 
   if (done) return <FinalScreen playerName={playerName} finalScore={finalScore} sessionCode={sessionCode} />
 
@@ -114,7 +112,6 @@ export default function PlayerGame({ playerName, sessionCode, onComplete }: Prop
         </div>
         <div className="score-pill">⭐ {Math.max(0, score).toLocaleString()}</div>
       </div>
-
       <div className="game-body">
         <QuestionView key={question.id} question={question} onAnswer={handleAnswer} />
       </div>
