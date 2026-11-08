@@ -1,7 +1,8 @@
 import { useState, useCallback, useEffect } from 'react'
 import { questions } from '../questions'
 import type { Question } from '../questions'
-import { socket } from '../socket'
+import { submitResponse, getLeaderboard } from '../lib/api'
+import { supabase } from '../lib/supabase'
 import {
   SurveyMCQuestion,
   TriviaMCQuestion,
@@ -9,7 +10,7 @@ import {
   FreeResponseQuestion,
 } from '../components/QuestionTypes'
 
-interface LeaderboardEntry { rank: number; name: string; score: number }
+interface LBEntry { rank: number; name: string; score: number }
 
 interface Props {
   playerName: string
@@ -17,7 +18,6 @@ interface Props {
   onComplete: (score: number) => void
 }
 
-// ── Confetti ──────────────────────────────────────────────────────
 function Confetti() {
   const colors = ['#f5c518', '#ec4899', '#8b5cf6', '#10b981', '#3b82f6', '#f97316']
   const pieces = Array.from({ length: 60 }, (_, i) => ({
@@ -46,22 +46,24 @@ function Confetti() {
   )
 }
 
-// ── Final leaderboard (live-updating) ─────────────────────────────
 function FinalScreen({ playerName, finalScore, sessionCode }: { playerName: string; finalScore: number; sessionCode: string }) {
-  const [board, setBoard] = useState<LeaderboardEntry[]>([])
+  const [board, setBoard] = useState<LBEntry[]>([])
   const [showConfetti, setShowConfetti] = useState(true)
 
   useEffect(() => {
-    // Get current leaderboard
-    socket.emit('get-leaderboard', { code: sessionCode }, (data: LeaderboardEntry[]) => {
-      setBoard(data)
-    })
-    socket.on('leaderboard-update', setBoard)
+    getLeaderboard(sessionCode).then(setBoard)
+
+    const channel = supabase
+      .channel(`player-done-${sessionCode}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'players', filter: `session_code=eq.${sessionCode}` },
+        () => getLeaderboard(sessionCode).then(setBoard)
+      )
+      .subscribe()
+
     const t = setTimeout(() => setShowConfetti(false), 4500)
-    return () => {
-      socket.off('leaderboard-update', setBoard)
-      clearTimeout(t)
-    }
+    return () => { supabase.removeChannel(channel); clearTimeout(t) }
   }, [sessionCode])
 
   const myRank = board.findIndex(e => e.name === playerName)
@@ -106,7 +108,6 @@ function FinalScreen({ playerName, finalScore, sessionCode }: { playerName: stri
   )
 }
 
-// ── Main game ─────────────────────────────────────────────────────
 export default function PlayerGame({ playerName, sessionCode, onComplete }: Props) {
   const [qIdx, setQIdx] = useState(0)
   const [score, setScore] = useState(0)
@@ -118,27 +119,20 @@ export default function PlayerGame({ playerName, sessionCode, onComplete }: Prop
 
   const handleAnswer = useCallback((answerLabel: string, points: number) => {
     const q = questions[qIdx]
-    const nextScore = Math.max(0, score + points)
+    const next = Math.max(0, score + points)
+    setScore(next)
 
-    // Log to server
-    socket.emit('submit-response', {
-      questionId: q.id,
-      questionText: q.text,
-      answerLabel,
-      points,
-    })
-
-    setScore(nextScore)
+    // Fire-and-forget save to Supabase
+    submitResponse(sessionCode, playerName, q.id, q.text, answerLabel, points, next)
 
     if (qIdx + 1 >= total) {
-      socket.emit('survey-complete')
-      setFinalScore(nextScore)
+      setFinalScore(next)
       setDone(true)
-      onComplete(nextScore)
+      onComplete(next)
     } else {
       setQIdx(i => i + 1)
     }
-  }, [qIdx, score, total, onComplete])
+  }, [qIdx, score, total, sessionCode, playerName, onComplete])
 
   if (done) {
     return <FinalScreen playerName={playerName} finalScore={finalScore} sessionCode={sessionCode} />

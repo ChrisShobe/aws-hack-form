@@ -1,35 +1,55 @@
 import { useState, useEffect } from 'react'
-import { socket } from '../socket'
+import { createSession, downloadCSV } from '../lib/api'
+import { supabase } from '../lib/supabase'
 
-interface Player { rank: number; name: string; score: number }
+interface Player { name: string; score: number }
 
 export default function HostDashboard() {
   const [step, setStep] = useState<'create' | 'live'>('create')
   const [customCode, setCustomCode] = useState('')
   const [code, setCode] = useState('')
-  const [joinUrls, setJoinUrls] = useState<string[]>([])
   const [players, setPlayers] = useState<Player[]>([])
   const [error, setError] = useState('')
+  const [loading, setLoading] = useState(false)
   const [copiedIdx, setCopiedIdx] = useState<number | null>(null)
 
+  // Subscribe to live player updates once session is created
   useEffect(() => {
-    socket.connect()
-    socket.on('leaderboard-update', setPlayers)
-    socket.on('participants-update', setPlayers)
-    return () => {
-      socket.off('leaderboard-update', setPlayers)
-      socket.off('participants-update', setPlayers)
-    }
-  }, [])
+    if (!code) return
 
-  function createSession() {
+    // Initial load
+    supabase.from('players').select('name, score').eq('session_code', code)
+      .order('score', { ascending: false })
+      .then(({ data }) => setPlayers(data ?? []))
+
+    const channel = supabase
+      .channel(`host-${code}`)
+      .on(
+        'postgres_changes',
+        { event: '*', schema: 'public', table: 'players', filter: `session_code=eq.${code}` },
+        () => {
+          supabase.from('players').select('name, score').eq('session_code', code)
+            .order('score', { ascending: false })
+            .then(({ data }) => setPlayers(data ?? []))
+        }
+      )
+      .subscribe()
+
+    return () => { supabase.removeChannel(channel) }
+  }, [code])
+
+  async function handleCreate() {
+    setLoading(true)
     setError('')
-    socket.emit('create-session', { customCode: customCode.trim() || undefined }, (res: { code?: string; joinUrls?: string[]; joinUrl?: string; error?: string }) => {
-      if (res?.error) { setError(res.error); return }
-      setCode(res.code!)
-      setJoinUrls(res.joinUrls ?? (res.joinUrl ? [res.joinUrl] : []))
+    try {
+      const newCode = await createSession(customCode || undefined)
+      setCode(newCode)
       setStep('live')
-    })
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
+      setLoading(false)
+    }
   }
 
   function copyUrl(url: string, idx: number) {
@@ -39,6 +59,7 @@ export default function HostDashboard() {
     })
   }
 
+  const joinUrl = `${window.location.origin}?code=${code}`
   const rankEmoji = (i: number) => i === 0 ? '🥇' : i === 1 ? '🥈' : i === 2 ? '🥉' : `#${i + 1}`
 
   if (step === 'create') {
@@ -47,7 +68,7 @@ export default function HostDashboard() {
         <div className="splash-logo">🎛️</div>
         <div className="splash-badge">ORGANIZER MODE</div>
         <h1>Create a Session</h1>
-        <p>Participants will join using your room code. Leave blank for a random code.</p>
+        <p>Participants join using your room code. Leave blank for a random code.</p>
 
         {error && (
           <div style={{
@@ -58,6 +79,7 @@ export default function HostDashboard() {
             color: '#fca5a5',
             fontWeight: 700,
             maxWidth: 380,
+            textAlign: 'center',
           }}>
             ⚠️ {error}
           </div>
@@ -72,13 +94,13 @@ export default function HostDashboard() {
             onChange={e => setCustomCode(e.target.value.toUpperCase().replace(/[^A-Z0-9]/g, ''))}
             maxLength={10}
             style={{ textTransform: 'uppercase', letterSpacing: '0.12em', textAlign: 'center', fontSize: '1.3rem' }}
-            onKeyDown={e => e.key === 'Enter' && createSession()}
+            onKeyDown={e => e.key === 'Enter' && !loading && handleCreate()}
             autoFocus
           />
         </div>
 
-        <button className="btn btn-primary" onClick={createSession}>
-          Create Session →
+        <button className="btn btn-primary" onClick={handleCreate} disabled={loading}>
+          {loading ? 'Creating...' : 'Create Session →'}
         </button>
         <a href="/" className="btn btn-secondary btn-sm">← Back</a>
       </div>
@@ -96,44 +118,24 @@ export default function HostDashboard() {
             {players.length} participant{players.length !== 1 ? 's' : ''} joined
           </div>
         </div>
-        <a
-          href={`/api/export/${code}`}
+        <button
           className="btn btn-secondary btn-sm"
           style={{ marginLeft: 'auto' }}
+          onClick={() => downloadCSV(code)}
         >
           ⬇ Export CSV
-        </a>
+        </button>
       </div>
 
       <div className="code-card">
         <div className="code-label">Room Code</div>
         <div className="code-big">{code}</div>
-
-        {joinUrls.length <= 1 ? (
-          <>
-            <div className="join-url-text">{joinUrls[0]}</div>
-            <button className="btn btn-secondary btn-sm" onClick={() => copyUrl(joinUrls[0], 0)}>
-              {copiedIdx === 0 ? '✅ Copied!' : '📋 Copy Join URL'}
-            </button>
-          </>
-        ) : (
-          <>
-            <div style={{ fontSize: '0.78rem', color: '#f5c518', fontWeight: 700, marginBottom: '0.25rem' }}>
-              Multiple network interfaces detected — try each URL on a phone until one works:
-            </div>
-            {joinUrls.map((url, i) => (
-              <div key={url} style={{ display: 'flex', alignItems: 'center', gap: '0.6rem', flexWrap: 'wrap', justifyContent: 'center' }}>
-                <div className="join-url-text" style={{ margin: 0 }}>{url}</div>
-                <button className="btn btn-secondary btn-sm" onClick={() => copyUrl(url, i)}>
-                  {copiedIdx === i ? '✅' : '📋'}
-                </button>
-              </div>
-            ))}
-          </>
-        )}
-
+        <div className="join-url-text">{joinUrl}</div>
+        <button className="btn btn-secondary btn-sm" onClick={() => copyUrl(joinUrl, 0)}>
+          {copiedIdx === 0 ? '✅ Copied!' : '📋 Copy Join URL'}
+        </button>
         <div style={{ fontSize: '0.75rem', color: '#475569', marginTop: '0.25rem' }}>
-          Share a URL or just the code — participants enter it on the join screen
+          Share this URL — it works from any device on any network
         </div>
       </div>
 
@@ -153,11 +155,7 @@ export default function HostDashboard() {
         ) : (
           <div className="leaderboard-list">
             {players.map((p, i) => (
-              <div
-                key={p.name}
-                className="leaderboard-entry"
-                style={{ animationDelay: `${i * 0.04}s` }}
-              >
+              <div key={p.name} className="leaderboard-entry" style={{ animationDelay: `${i * 0.04}s` }}>
                 <span className="lb-rank">{rankEmoji(i)}</span>
                 <span className="lb-name">{p.name}</span>
                 <span className="lb-score">{p.score.toLocaleString()}</span>

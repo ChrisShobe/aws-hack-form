@@ -1,5 +1,5 @@
 import { useState } from 'react'
-import { socket } from '../socket'
+import { joinSession } from '../lib/api'
 
 interface Props {
   defaultCode: string
@@ -14,20 +14,18 @@ export default function JoinScreen({ defaultCode, onJoin, onCreateHost }: Props)
   const [error, setError] = useState('')
   const [loading, setLoading] = useState(false)
 
-  function handleJoin() {
+  async function handleJoin() {
     if (!code.trim() || !name.trim()) return
     setLoading(true)
     setError('')
-    socket.connect()
-    socket.emit('join-session', { code: code.trim().toUpperCase(), name: name.trim() }, (res: { ok?: boolean; error?: string }) => {
+    try {
+      await joinSession(code.trim().toUpperCase(), name.trim())
+      onJoin(name.trim(), code.trim().toUpperCase())
+    } catch (e) {
+      setError((e as Error).message)
+    } finally {
       setLoading(false)
-      if (res?.error) {
-        setError(res.error)
-        socket.disconnect()
-      } else {
-        onJoin(name.trim(), code.trim().toUpperCase())
-      }
-    })
+    }
   }
 
   if (mode === 'pick') {
@@ -65,6 +63,7 @@ export default function JoinScreen({ defaultCode, onJoin, onCreateHost }: Props)
           color: '#fca5a5',
           fontWeight: 700,
           maxWidth: 380,
+          textAlign: 'center',
         }}>
           ⚠️ {error}
         </div>
@@ -104,9 +103,7 @@ export default function JoinScreen({ defaultCode, onJoin, onCreateHost }: Props)
           {loading ? 'Joining...' : '🚀 Join Session'}
         </button>
         {!defaultCode && (
-          <button className="btn btn-secondary" onClick={() => setMode('pick')}>
-            ← Back
-          </button>
+          <button className="btn btn-secondary" onClick={() => setMode('pick')}>← Back</button>
         )}
       </div>
 
